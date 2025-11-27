@@ -10,7 +10,7 @@ from sklearn.model_selection import train_test_split
 
 # --- 1. 설정 변수 ---
 # 기본 경로 (상위 폴더)
-DATA_ROOT = r"C:\Dev\KAIROS_Project\Vision\0_data\ObjectClassification"
+DATA_ROOT = r"C:\Dev\KAIROS_Project\data"
 # 학습에 사용할 폴더 리스트
 CLASS_NAMES = ["Aug_ESP32", "Aug_L298N", "Aug_MB102"]
 NUM_CLASSES = len(CLASS_NAMES)
