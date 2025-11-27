@@ -7,6 +7,7 @@ import os
 import random
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
+import glob
 
 # --- 1. 설정 변수 ---
 # 기본 경로 (상위 폴더)
@@ -20,7 +21,7 @@ NUM_EPOCHS = 20
 LEARNING_RATE = 0.001
 # 장치 설정
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+print(DEVICE)
 # MobileNetV3-Small 표준 Normalization 값 (ImageNet 기준)
 MOBILENET_MEAN = [0.485, 0.456, 0.406]
 MOBILENET_STD = [0.229, 0.224, 0.225]
@@ -108,9 +109,9 @@ def prepare_data_loaders():
     val_dataset = CustomDataset(val_files, val_labels, transform=transform)
     test_dataset = CustomDataset(test_files, test_labels, transform=transform)
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
     
     return train_loader, val_loader, test_loader
 
@@ -145,6 +146,9 @@ def train_model(model, train_loader, val_loader):
     print("모델 학습 시작...")
     
     for epoch in range(NUM_EPOCHS):
+        epoch_num = epoch + 1
+        save_now = False
+
         # 1. 학습 단계
         model.train()
         running_loss = 0.0
@@ -190,12 +194,25 @@ def train_model(model, train_loader, val_loader):
         print(f"\n[Epoch {epoch+1}] Train Loss: {epoch_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_accuracy:.4f}")
         
         # 3. 최적 모델 저장
+
+        # 1) 검증 정확도가 최고치를 갱신했을 때
         if val_accuracy > best_accuracy:
             best_accuracy = val_accuracy
-            model_save_path = f"best_mobilenetv3_classifier_{best_accuracy:.4f}.pth"
+            model_save_path = f"best_mobilenetv3_classifier_e{epoch_num}_acc{best_accuracy:.4f}.pth"
+            print(f"-> 🎉 최적 모델 갱신 및 저장 완료 (epoch: {epoch_num}, Accuracy: {best_accuracy:.4f})")
+            save_now = True
+        
+        # 2) 매 5번째 에포크마다 저장 (최적 모델과 별도로 저장)
+        if epoch_num % 5 == 0 and not save_now:
+            model_save_path = f"checkpoint_mobilenetv3_classifier_e{epoch_num}_acc{val_accuracy:.4f}.pth"
             torch.save(model.state_dict(), model_save_path)
-            print(f"-> 최적 모델 저장 완료 (Accuracy: {best_accuracy:.4f})")
-            
+            print(f"-> 💾 체크포인트 모델 저장 완료 (epoch: {epoch_num}, Accuracy: {val_accuracy:.4f})")
+            save_now = True
+        
+        # 3) 위 두 조건 중 하나에 해당하면 저장 실행
+        if save_now:
+            torch.save(model.state_dict(), model_save_path)
+        
     return model
 
 # --- 5. 테스트 함수 ---
