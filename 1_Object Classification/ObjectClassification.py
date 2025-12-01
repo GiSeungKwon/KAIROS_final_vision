@@ -5,7 +5,7 @@ from torchvision import transforms
 from PIL import Image
 
 # --- 1. 설정 변수 (학습 스크립트와 동일하게 설정) ---
-CLASS_NAMES = ["Aug_ESP32", "Aug_L298N", "Aug_MB102"]
+CLASS_NAMES = ["ESP32", "L298N(Motor)", "MB102(Power)"]
 NUM_CLASSES = len(CLASS_NAMES)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MOBILENET_MEAN = [0.485, 0.456, 0.406]
@@ -42,7 +42,7 @@ def inference_stream(model, transform):
     """실시간 웹캠 스트리밍에서 객체 분류를 수행하고 신뢰도를 표시합니다."""
     
     # 0번 카메라 (웹캠) 캡처 시작
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(1)
     if not cap.isOpened():
         print("🔴 오류: 웹캠을 열 수 없습니다. 카메라 인덱스를 확인하세요.")
         return
@@ -101,7 +101,11 @@ def inference_stream(model, transform):
 if __name__ == "__main__":
     # ⚠️ 테스트할 모델 파일 경로를 여기에 정확히 지정해야 합니다!
     # 예시: 학습 중 저장된 'best' 모델 파일
-    MODEL_WEIGHTS_PATH = "best_mobilenetv3_classifier_eX_accY.pth" 
+    MODEL_WEIGHTS_PATH = "checkpoint_mobilenetv3_classifier_e5_acc1.0000.pth"
+    # MODEL_WEIGHTS_PATH = "checkpoint_mobilenetv3_classifier_e10_acc0.9935.pth"
+    # MODEL_WEIGHTS_PATH = "checkpoint_mobilenetv3_classifier_e15_acc1.0000.pth"
+    # MODEL_WEIGHTS_PATH = "checkpoint_mobilenetv3_classifier_e20_acc1.0000.pth"
+
     
     # ⚠️ 학습 코드에서 최고 정확도로 저장된 실제 파일 이름으로 변경해주세요.
     # 예: "best_mobilenetv3_classifier_e18_acc0.9870.pth"
