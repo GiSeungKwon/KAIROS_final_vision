@@ -9,7 +9,8 @@ import time
 # =================================================================
 # 1. 설정 변수 (학습 파라미터 및 ROI 설정)
 # =================================================================
-MODEL_PATH = 'ESP32_anomaly_detector_best_loss.pth' 
+# MODEL_PATH = 'ESP32_anomaly_detector_best_loss.pth'
+MODEL_PATH = 'ESP32_anomaly_detector_epoch_020.pth'
 IMAGE_SIZE = 128 # 모델 학습 시 사용한 이미지 크기
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
