@@ -155,7 +155,7 @@ def real_time_reconstruction_test(detector, cap):
         cv2.putText(display_frame, f"MSE Loss (ROI): {reconstruction_error:.6f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
         cv2.putText(display_frame, "Press 'q' to quit", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
-        cv2.imshow("Real-time ROI Reconstruction Test", display_frame)
+        cv2.imshow("ESP32 Anomaly Detection", display_frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
