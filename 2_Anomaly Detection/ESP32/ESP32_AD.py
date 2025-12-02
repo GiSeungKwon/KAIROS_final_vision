@@ -116,7 +116,7 @@ def real_time_reconstruction_test(detector, cap):
 
         if roi.size == 0:
             cv2.putText(display_frame, "Error: Invalid ROI (Check coordinates)", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-            cv2.imshow("Real-time ROI Test", display_frame)
+            cv2.imshow("ESP32 Anomaly Detection", display_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'): break
             continue
 
