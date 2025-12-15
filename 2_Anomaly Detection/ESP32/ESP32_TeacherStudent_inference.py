@@ -1,206 +1,202 @@
 import os
-from glob import glob
-from tqdm import tqdm
+import yaml
+import cv2
 import numpy as np
-from PIL import Image
-
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
-import timm
 import torch.nn.functional as F
+from torchvision import transforms, models
+from PIL import Image
 
-# --- 설정 (Hyperparameters and Paths) ---
-# 정상 이미지 경로 (사용자 지정 경로)
-MODULE = "ESP32"
-NORMAL_IMAGE_DIR = r"C:\Dev\KAIROS_Project\data\aug\aug_Anomaly_" + MODULE
-MEMORY_BANK_NAME = MODULE + "_patchcore_memory_bank.npy"
-# 모델 설정
-BACKBONE_MODEL = "resnet18" # 특징 추출기 모델 (예: WideResNet, ResNet18 등)
-FEATURE_LAYER_NAMES = ["layer2", "layer3"] # PatchCore에서 사용할 특징 맵 레이어
-IMAGE_SIZE = 256
-BATCH_SIZE = 32
-PATCH_SIZE = 3 # 패치 크기 (일반적으로 3)
-NEIGHBOR_COUNT = 9 # 이상 스코어 계산 시 사용할 최근접 이웃 개수
-SUBSAMPLING_RATIO = 0.1 # 메모리 뱅크 구축 시 코어셋 서브샘플링 비율 (0.01~0.2)
-
-PATCH_STRIDE = 8
-
-# 출력 경로
-OUTPUT_DIR = "patchcore_results"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# --------------------------------------------------
+# Config (훈련 코드와 동일)
+# --------------------------------------------------
+CONFIG_YAML_PATH = "ESP32_config.yaml"
+# 학습된 모델의 경로 (최고 성능 모델을 사용한다고 가정)
+STUDENT_MODEL_PATH = "output/student_kd_best.pth" 
 
 
-# --- 1. 데이터셋 및 데이터로더 ---
-
-class ESP32Dataset(Dataset):
-    """
-    ESP32 정상 이미지를 로드하는 Dataset 클래스
-    """
-    def __init__(self, image_dir, transform=None):
-        # 지정된 경로에서 모든 이미지 파일 경로를 찾음
-        self.image_paths = sorted(glob(os.path.join(image_dir, '*.*')))
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.image_paths)
-
-    def __getitem__(self, idx):
-        # 이미지 로드 및 RGB 변환
-        img_path = self.image_paths[idx]
-        img = Image.open(img_path).convert('RGB')
-        
-        # 변환 적용
-        if self.transform:
-            img = self.transform(img)
-        
-        # 파일 경로도 반환하여 나중에 디버깅에 활용 가능
-        return img, img_path
-
-# 데이터 전처리 파이프라인
-data_transforms = transforms.Compose([
-    transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-    transforms.ToTensor(),
-    # ImageNet 평균/표준편차로 정규화 (사전 학습 모델 사용 시 일반적)
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
-
-# 데이터셋 및 데이터로더 생성
-train_dataset = ESP32Dataset(NORMAL_IMAGE_DIR, transform=data_transforms)
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+def load_config(path):
+    """YAML 설정 파일을 로드합니다."""
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
-# --- 2. 특징 추출기 (Feature Extractor) ---
+# --------------------------------------------------
+# Teacher (ResNet18, layer3) (훈련 코드와 동일)
+# --------------------------------------------------
+class TeacherNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # NOTE: pretrained=True는 ImageNet weights를 사용함을 의미합니다.
+        self.model = models.resnet18(pretrained=True)
+        self.features = {}
 
-class FeatureExtractor(nn.Module):
-    """
-    사전 학습된 모델을 사용하여 중간 특징 맵을 추출하는 클래스
-    """
-    def __init__(self, backbone_name, feature_layer_names):
-        super(FeatureExtractor, self).__init__()
-        # timm 라이브러리를 사용하여 사전 학습된 모델 로드 (pre=True)
-        self.model = timm.create_model(
-            backbone_name, 
-            pretrained=True, 
-            features_only=True # 특징 맵만 추출하도록 설정
-        )
-        # 사용할 특징 레이어의 인덱스를 찾음
-        self.feature_layer_indices = []
-        for i, info in enumerate(self.model.feature_info):
-            if info["module"] in feature_layer_names:
-                self.feature_layer_indices.append(i)
+        def hook_fn(name):
+            def fn(_, __, output):
+                # .clone()을 사용하여 features 딕셔너리에 복사본을 저장합니다.
+                # (일반적으로 추론 시에는 불필요하지만, 안전을 위해 유지)
+                self.features[name] = output.clone() 
+            return fn
+
+        # 훈련 시와 동일하게 layer3에만 hook을 걸어 피처를 추출합니다.
+        self.model.layer3.register_forward_hook(hook_fn("layer3"))
 
     def forward(self, x):
-        # 특징 맵 추출
-        features = self.model(x)
-        # 지정된 레이어의 특징만 반환
-        return [features[i] for i in self.feature_layer_indices]
-
-# 특징 추출기 초기화
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-extractor = FeatureExtractor(BACKBONE_MODEL, FEATURE_LAYER_NAMES).to(device)
-extractor.eval() # 특징 추출기는 학습 모드가 아닌 평가 모드(가중치 고정)로 사용
+        _ = self.model(x)
+        return self.features["layer3"]  # [B, 256, 16, 16]
 
 
-# --- 3. 특징 패치화 및 메모리 뱅크 구축 (학습) ---
-
-def extract_patches(features, patch_size):
-    """
-    PatchCore 방식:
-    - 서로 다른 해상도의 feature map을
-    - 가장 큰 해상도 기준으로 upsample
-    - 같은 위치의 패치끼리 concat
-    """
-    # 기준 해상도 (가장 큰 H, W)
-    H_max = max([f.shape[2] for f in features])
-    W_max = max([f.shape[3] for f in features])
-
-    aligned_features = []
-
-    for feat in features:
-        if feat.shape[2] != H_max or feat.shape[3] != W_max:
-            feat = F.interpolate(
-                feat,
-                size=(H_max, W_max),
-                mode="bilinear",
-                align_corners=False
-            )
-        aligned_features.append(feat)
-
-    all_patches = []
-    for feat in aligned_features:
-        B, C, H, W = feat.shape
-        patches = feat.unfold(2, patch_size, PATCH_STRIDE).unfold(3, patch_size, PATCH_STRIDE)
-        patches = patches.permute(0, 2, 3, 1, 4, 5)
-        patches = patches.contiguous().view(
-            B, -1, C * patch_size * patch_size
+# --------------------------------------------------
+# Student (MobileNetV2 기반) (훈련 코드와 동일)
+# --------------------------------------------------
+class StudentNet(nn.Module):
+    def __init__(self, width_mult=0.5):
+        super().__init__()
+        backbone = models.mobilenet_v2(
+            pretrained=False,
+            width_mult=width_mult
         )
-        all_patches.append(patches)
 
-    # 이제 patch 개수가 동일 → concat 가능
-    combined_patches = torch.cat(all_patches, dim=-1)
+        # 훈련 코드에서 :14까지 사용했으므로 동일하게 설정
+        self.features = backbone.features[:14]
 
-    return combined_patches.view(-1, combined_patches.shape[-1])
+        # 훈련 코드에서 수행했던 채널 수 계산 로직은 로드 시 불필요하나,
+        # 모델의 __init__ 구조를 훈련과 동일하게 유지해야 정확한 weight 로드가 가능합니다.
+        with torch.no_grad():
+            dummy = torch.zeros(1, 3, 256, 256)
+            # MobileNetV2의 기본 입력 크기가 224x224이지만, 여기서는 256x256에 맞춰 진행
+            c = self.features(dummy).shape[1] 
 
+        # 훈련 코드와 동일하게 채널 수를 256으로 맞추는 1x1 Conv 레이어
+        self.proj = nn.Conv2d(c, 256, kernel_size=1)
 
-print("--- 1. 특징 추출 및 메모리 뱅크 초기 구축 시작 ---")
-memory_bank = []
-
-with torch.no_grad(): # 특징 추출은 학습이 아님 (기울기 계산 불필요)
-    for images, _ in tqdm(train_loader, desc="특징 추출"):
-        images = images.to(device)
-        
-        # 1단계: 특징 추출
-        # (B, C_l2, H_l2, W_l2), (B, C_l3, H_l3, W_l3)
-        features = extractor(images) 
-        
-        # 2단계: 특징 패치화
-        # (Total_patches_in_batch, C_total)
-        batch_patches = extract_patches(features, PATCH_SIZE)
-        
-        # CPU로 옮기고 NumPy 배열로 변환 후 메모리 뱅크에 추가
-        # memory_bank.append(batch_patches.cpu().numpy())
-        memory_bank.append(batch_patches.detach())
-
-# 전체 메모리 뱅크 결합
-# memory_bank = np.concatenate(memory_bank, axis=0)
-memory_bank = torch.cat(memory_bank, dim=0)
-print(f"초기 메모리 뱅크 크기: {memory_bank.shape}") # (총 패치 개수, 특징 차원)
+    def forward(self, x):
+        feat = self.features(x)
+        feat = self.proj(feat)
+        return feat
 
 
-# --- 4. 코어셋 서브샘플링 (Core-Set Subsampling) ---
-# 대규모 메모리 뱅크를 효율적으로 줄여 추론 속도와 메모리 사용량을 최적화
+def run_anomaly_detection_stream():
+    """웹캠 스트리밍을 통해 KD 기반 이상 탐지를 수행합니다."""
+    
+    # 1. 설정 로드
+    config = load_config(CONFIG_YAML_PATH)
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() and config["device"] == "cuda" else "cpu"
+    )
+    
+    # 2. 이미지 변환 (훈련 시와 동일한 정규화, 크기 조정)
+    # PIL Image를 입력으로 받도록 합니다.
+    transform = transforms.Compose([
+        transforms.Resize((config["image_size"], config["image_size"])),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        ),
+    ])
 
-def get_coreset_subsampling_gpu(features, M, device):
-    N, D = features.shape
-    if M >= N:
-        return features
+    # 3. 모델 로드 및 준비
+    print("\n--- KD Anomaly Detection 모델 로드 중 ---")
+    teacher = TeacherNet().to(device)
+    student = StudentNet(config["student_width_mult"]).to(device)
+    
+    # 학습된 Student 모델 가중치 로드
+    if not os.path.exists(STUDENT_MODEL_PATH):
+        print(f"ERROR: 학습된 모델 파일이 없습니다! 경로: {STUDENT_MODEL_PATH}")
+        return
 
-    center_idx = torch.randint(0, N, (1,), device=device)
-    centers = features[center_idx]
-    min_distances = torch.cdist(features, centers).squeeze(1)
-    selected_indices = [center_idx.item()]
+    student.load_state_dict(torch.load(STUDENT_MODEL_PATH, map_location=device))
+    
+    # Teacher와 Student 모두 추론 모드 (eval)로 설정
+    teacher.eval()
+    student.eval()
+    
+    print(f"모델 로드 완료: {STUDENT_MODEL_PATH}")
+    print(f"이상 탐지 임계값 (예상): {config.get('anomaly_threshold', '설정되지 않음')} (yaml 파일에서 확인)")
+    
+    # 4. 웹캠 설정
+    cap = cv2.VideoCapture(0) # 0은 보통 기본 웹캠을 의미합니다.
+    if not cap.isOpened():
+        print("ERROR: 웹캠을 열 수 없습니다.")
+        return
 
-    for _ in tqdm(range(1, M), desc="GPU 코어셋 선택"):
-        new_center_idx = torch.argmax(min_distances)
-        selected_indices.append(new_center_idx.item())
-        new_center = features[new_center_idx].unsqueeze(0)
-        new_distances = torch.cdist(features, new_center).squeeze(1)
-        min_distances = torch.minimum(min_distances, new_distances)
+    print("\n--- 실시간 이상 탐지 스트리밍 시작 (Q 키를 눌러 종료) ---")
 
-    return features[selected_indices]
+    try:
+        while True:
+            # 프레임 읽기
+            ret, frame = cap.read()
+            if not ret:
+                print("스트림에서 프레임을 읽을 수 없습니다. 종료합니다.")
+                break
 
-# 코어셋으로 줄일 개수 계산
-M = int(len(memory_bank) * SUBSAMPLING_RATIO)
-print(f"코어셋 서브샘플링 목표 개수: {M}")
+            # BGR to RGB (OpenCV 기본)
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # NumPy 배열을 PIL Image로 변환 (transforms.Compose를 사용하기 위함)
+            pil_image = Image.fromarray(rgb_frame)
+            
+            # 이미지 전처리 (훈련 시와 동일)
+            # [C, H, W] 텐서로 변환
+            input_tensor = transform(pil_image).unsqueeze(0).to(device) 
 
-# 코어셋 서브샘플링 실행
-coreset_memory_bank = get_coreset_subsampling_gpu(memory_bank, M, device=device)
-print(f"최종 코어셋 메모리 뱅크 크기: {coreset_memory_bank.shape}")
+            # 5. 이상 탐지 로직 (KD Loss 계산)
+            with torch.no_grad():
+                # Teacher/Student 피처 추출
+                teacher_feat = teacher(input_tensor)
+                student_feat = student(input_tensor)
+                
+                # Resizing (훈련 코드와 동일한 보간법)
+                student_feat = F.interpolate(
+                    student_feat,
+                    size=teacher_feat.shape[2:],
+                    mode="bilinear",
+                    align_corners=False
+                )
+                
+                # MSE Loss 계산 (지식 증류 Loss == 이상 점수)
+                # kd_loss는 배치 차원 [1, ] 스칼라 텐서입니다.
+                kd_loss = F.mse_loss(student_feat, teacher_feat, reduction='mean') 
+                
+                # 이상 점수 (Anomaly Score)
+                # 훈련 시 적용된 kd_loss_weight를 곱하여 최종 점수로 사용
+                anomaly_score = kd_loss.item() * config.get("kd_loss_weight", 1.0)
+                
+                # 이상 판단 (yaml 파일에 threshold가 설정되어 있어야 합니다)
+                threshold = config.get("anomaly_threshold", 0.08) # 기본값 0.08 사용
+                is_anomaly = anomaly_score > threshold
+                
+                # 6. 결과 시각화
+                display_text = f"Anomaly Score: {anomaly_score:.6f}"
+                color = (0, 255, 0) # Green (정상)
+                
+                if is_anomaly:
+                    display_text += " | ANOMALY DETECTED!"
+                    color = (0, 0, 255) # Red (이상)
+                else:
+                    display_text += " | Normal"
+                    
+                # 화면에 텍스트 표시 (OpenCV 이미지 사용)
+                cv2.putText(frame, display_text, (10, 30), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2, cv2.LINE_AA)
+                cv2.putText(frame, f"Threshold: {threshold:.4f}", (10, 60), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2, cv2.LINE_AA) # Yellow
+                
+                # 결과 창에 표시
+                cv2.imshow("Real-time Anomaly Detection (KD)", frame)
 
-# 학습된 메모리 뱅크 저장
-memory_bank_path = os.path.join(OUTPUT_DIR, MEMORY_BANK_NAME)
-coreset_memory_bank_np = coreset_memory_bank.cpu().numpy()
-np.save(memory_bank_path, coreset_memory_bank_np)
-print(f"\n--- 학습 완료: 메모리 뱅크가 다음 경로에 저장되었습니다: {memory_bank_path} ---")
+            # 'q' 키를 누르면 종료
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+
+    finally:
+        # 종료 시 웹캠 및 창 해제
+        cap.release()
+        cv2.destroyAllWindows()
+        print("\n--- 스트리밍 종료 ---")
+
+
+if __name__ == "__main__":
+    run_anomaly_detection_stream()

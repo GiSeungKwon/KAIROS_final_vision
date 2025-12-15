@@ -2,7 +2,8 @@
 
 # --- 전역 설정 ---
 board_name: "ESP32"
-data_root: "C:/Dev/KAIROS_Project/data/aug/aug_Anomaly_ESP32" # !!! 사용자 환경에 맞게 수정 필요 !!!
+data_root: "C:/Dev/KAIROS_Project/data/aug/aug_Anomaly_ESP32"
+val_split: 0.1
 output_dir: "./output"
 seed: 42
 device: "cuda" # CUDA 사용 가능 시, 'cpu'로 변경 가능
@@ -13,12 +14,12 @@ train_ratio: 0.8
 normal_class_name: "정상" 
 
 # --- 모델 설정 ---
-teacher_model: "resnet18"
+teacher_model: "resnet50"
 student_model: "mobilenet_v2"
 student_width_mult: 0.5
 # KD Loss를 계산할 ResNet18의 Layer 이름
 # Hook이 등록될 모듈 이름입니다.
-feature_layers: ["layer2", "layer3"] 
+feature_layers: ["layer3"]
 
 # --- 학습 설정 ---
 epochs: 100
