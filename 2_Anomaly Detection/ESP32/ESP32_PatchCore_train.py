@@ -9,6 +9,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 import timm
+import torch.nn.functional as F
 
 # --- 설정 (Hyperparameters and Paths) ---
 # 정상 이미지 경로 (사용자 지정 경로)
@@ -65,7 +66,7 @@ data_transforms = transforms.Compose([
 
 # 데이터셋 및 데이터로더 생성
 train_dataset = ESP32Dataset(NORMAL_IMAGE_DIR, transform=data_transforms)
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
 
 # --- 2. 특징 추출기 (Feature Extractor) ---
@@ -83,10 +84,10 @@ class FeatureExtractor(nn.Module):
             features_only=True # 특징 맵만 추출하도록 설정
         )
         # 사용할 특징 레이어의 인덱스를 찾음
-        self.feature_layer_indices = [
-            list(self.model.feature_info.module_names).index(name) 
-            for name in feature_layer_names
-        ]
+        self.feature_layer_indices = []
+        for i, info in enumerate(self.model.feature_info):
+            if info["module"] in feature_layer_names:
+                self.feature_layer_indices.append(i)
 
     def forward(self, x):
         # 특징 맵 추출
@@ -104,23 +105,41 @@ extractor.eval() # 특징 추출기는 학습 모드가 아닌 평가 모드(가
 
 def extract_patches(features, patch_size):
     """
-    특징 맵을 PatchCore의 '패치' 형태로 변환 (sliding window)
+    PatchCore 방식:
+    - 서로 다른 해상도의 feature map을
+    - 가장 큰 해상도 기준으로 upsample
+    - 같은 위치의 패치끼리 concat
     """
+    # 기준 해상도 (가장 큰 H, W)
+    H_max = max([f.shape[2] for f in features])
+    W_max = max([f.shape[3] for f in features])
+
+    aligned_features = []
+
+    for feat in features:
+        if feat.shape[2] != H_max or feat.shape[3] != W_max:
+            feat = F.interpolate(
+                feat,
+                size=(H_max, W_max),
+                mode="bilinear",
+                align_corners=False
+            )
+        aligned_features.append(feat)
+
     all_patches = []
-    # 각 특징 맵(레이어)에 대해 처리
-    for feat in features: # feat: (B, C, H, W)
+    for feat in aligned_features:
         B, C, H, W = feat.shape
-        # unfold를 사용하여 특징 맵을 패치로 나눔
-        # kernel_size=patch_size, stride=1 (겹치는 패치)
-        patches = feat.unfold(2, patch_size, 1).unfold(3, patch_size, 1) # (B, C, H', W', p, p)
-        patches = patches.permute(0, 2, 3, 1, 4, 5) # (B, H', W', C, p, p)
-        patches = patches.contiguous().view(B, -1, C * patch_size * patch_size) # (B, N_patches, C_patch)
+        patches = feat.unfold(2, patch_size, 1).unfold(3, patch_size, 1)
+        patches = patches.permute(0, 2, 3, 1, 4, 5)
+        patches = patches.contiguous().view(
+            B, -1, C * patch_size * patch_size
+        )
         all_patches.append(patches)
-    
-    # 모든 레이어의 패치를 채널(마지막 차원) 기준으로 결합
-    # (B, N_patches_total, C_total)
+
+    # 이제 patch 개수가 동일 → concat 가능
     combined_patches = torch.cat(all_patches, dim=-1)
-    return combined_patches.view(-1, combined_patches.shape[-1]) # (Total_patches, C_total)
+
+    return combined_patches.view(-1, combined_patches.shape[-1])
 
 
 print("--- 1. 특징 추출 및 메모리 뱅크 초기 구축 시작 ---")
