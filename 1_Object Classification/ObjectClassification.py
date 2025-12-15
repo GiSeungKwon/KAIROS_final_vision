@@ -1,124 +1,145 @@
-import torch
-import cv2
+import os
+import sys
 import numpy as np
-from torchvision import transforms
+import cv2
 from PIL import Image
+import time
 
-# --- 1. 설정 변수 (학습 스크립트와 동일하게 설정) ---
-CLASS_NAMES = ["ESP32", "L298N(Motor)", "MB102(Power)"]
-NUM_CLASSES = len(CLASS_NAMES)
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MOBILENET_MEAN = [0.485, 0.456, 0.406]
-MOBILENET_STD = [0.229, 0.224, 0.225]
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchvision import models, transforms
 
-# --- 2. 모델 및 전처리 로드 ---
+# --- 1. 설정 (학습 코드와 동일하게 유지) ---
+NUM_CLASSES = 3  # ESP32, L298N, MB102
+INPUT_SIZE = 224
+MODEL_SAVE_PATH = 'C:/Dev/KAIROS_Project/models'
+MODEL_FILE_NAME = 'model_epoch_10.pth'
+MODEL_PATH = os.path.join(MODEL_SAVE_PATH, MODEL_FILE_NAME)
 
-def load_model(model_path, num_classes):
-    """학습된 모델 가중치를 로드하고 평가 모드로 설정합니다."""
-    # models.mobilenet_v3_small 함수를 재사용 (학습 코드의 create_model 함수 내용)
-    model = torch.hub.load('pytorch/vision:v0.10.0', 'mobilenet_v3_small', weights=None)
+# 클래스 인덱스와 이름 매핑 (학습 시의 순서를 따름)
+# 데이터셋 폴더 이름을 기준으로 순서가 결정됩니다.
+# 예시: 'aug_Anomaly_ESP32' -> 0, 'aug_Anomaly_L298N' -> 1, 'aug_Anomaly_MB102' -> 2
+CLASS_NAMES = ['ESP32', 'L298N', 'MB102'] # 실제 데이터셋의 알파벳 순서에 맞게 조정하세요.
+# 참고: 학습 코드의 출력 `print("클래스 매핑:", full_dataset.class_to_idx)`을 확인하여 정확한 순서를 적용해야 합니다.
+
+
+# --- 2. 모델 로드 및 구조 재정의 ---
+
+def load_classification_model(model_path, num_classes, device):
+    print(f"모델 로드 중: {model_path}")
     
-    # 최종 분류층(Classifier) 재정의
-    in_features = model.classifier[-1].in_features
-    model.classifier[-1] = torch.nn.Linear(in_features, num_classes)
+    # 1. ImageNet으로 사전 학습된 ResNet-50 구조를 로드
+    model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
     
-    # 저장된 가중치 로드
-    model.load_state_dict(torch.load(model_path, map_location=DEVICE))
-    model.to(DEVICE)
-    model.eval() # 평가 모드 설정
-    print(f"모델 로드 완료: {model_path} ({DEVICE})")
+    # 2. 마지막 Fully Connected (FC) 레이어를 재정의 (클래스 수 맞추기)
+    num_ftrs = model.fc.in_features
+    model.fc = nn.Linear(num_ftrs, num_classes)
+    
+    # 3. 저장된 가중치(State Dictionary) 로드
+    try:
+        model.load_state_dict(torch.load(model_path, map_location=device))
+    except FileNotFoundError:
+        print(f"오류: 모델 가중치 파일({model_path})을 찾을 수 없습니다.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"오류: 모델 가중치 로드 중 문제가 발생했습니다: {e}")
+        sys.exit(1)
+
+    # 4. 모델 설정 및 장치 이동
+    model = model.to(device)
+    model.eval()  # 추론 모드 설정
+    
     return model
 
-# 이미지 전처리 (학습 시 사용한 정규화/리사이즈와 동일해야 함)
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
+
+# --- 3. 데이터 전처리 (추론용) ---
+
+# 학습 코드의 'all' 변환과 동일해야 함
+data_transform = transforms.Compose([
+    transforms.ToPILImage(), # OpenCV BGR 배열을 PIL 이미지로 변환
+    transforms.Resize((INPUT_SIZE, INPUT_SIZE)), 
     transforms.ToTensor(),
-    transforms.Normalize(mean=MOBILENET_MEAN, std=MOBILENET_STD)
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
 
-# --- 3. 실시간 추론 함수 ---
 
-def inference_stream(model, transform):
-    """실시간 웹캠 스트리밍에서 객체 분류를 수행하고 신뢰도를 표시합니다."""
-    
-    # 0번 카메라 (웹캠) 캡처 시작
+# --- 4. 실시간 카메라 메인 루프 ---
+
+def main():
+    # CUDA 사용 가능 여부 확인
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"사용 장치: {device}")
+
+    # 모델 로드
+    model = load_classification_model(MODEL_PATH, NUM_CLASSES, device)
+
+    # 카메라 초기화 (0은 일반적으로 기본 웹캠)
     cap = cv2.VideoCapture(1)
     if not cap.isOpened():
-        print("🔴 오류: 웹캠을 열 수 없습니다. 카메라 인덱스를 확인하세요.")
+        print("오류: 카메라를 열 수 없습니다. 카메라 연결 상태를 확인하세요.")
         return
 
-    print("🟢 실시간 스트리밍 시작. 'q'를 눌러 종료하세요.")
-    
-    with torch.no_grad(): # 추론 시에는 기울기 계산을 비활성화
+    # 스트리밍 및 분류 루프
+    with torch.no_grad(): # 추론 시에는 기울기 계산 불필요
         while True:
-            # 1. 프레임 읽기
+            start_time = time.time() # FPS 측정을 위한 시작 시간
+
+            # 프레임 읽기 (OpenCV는 BGR 포맷으로 읽음)
             ret, frame = cap.read()
             if not ret:
+                print("오류: 카메라에서 프레임을 읽을 수 없습니다.")
                 break
-                
-            # 2. 전처리
-            # OpenCV (BGR) -> RGB
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # NumPy 배열 -> PIL Image -> Tensor로 변환 및 정규화
-            pil_image = Image.fromarray(rgb_frame)
-            input_tensor = transform(pil_image).unsqueeze(0).to(DEVICE) # (1, C, H, W) 형태로 변환
-            
-            # 3. 모델 추론
+
+            # 1. 이미지 전처리
+            original_frame = frame.copy() 
+            input_tensor = data_transform(original_frame).unsqueeze(0).to(device)
+
+            # 2. 모델 추론
             outputs = model(input_tensor)
             
-            # 4. 결과 해석
-            # 로짓(Logits)을 확률(Probabilities)로 변환
-            probabilities = torch.nn.functional.softmax(outputs, dim=1)
+            # 3. 결과 해석 (Softmax 및 예측 클래스)
+            probabilities = F.softmax(outputs, dim=1).squeeze().cpu().numpy()
             
-            # 가장 높은 신뢰도와 해당 클래스 인덱스 찾기
-            conf_score, predicted_idx = torch.max(probabilities, 1)
-            
-            # 결과 값 추출 (Tensor -> Python Value)
-            predicted_class = CLASS_NAMES[predicted_idx.item()]
-            confidence = conf_score.item()
-            
-            # 5. 결과 시각화 (OpenCV)
-            text = f"Class: {predicted_class}"
-            confidence_text = f"Confidence: {confidence*100:.2f}%"
-            
-            # 결과 텍스트 표시
-            cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
-            cv2.putText(frame, confidence_text, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2, cv2.LINE_AA)
+            # 가장 높은 확률의 클래스 인덱스
+            predicted_index = np.argmax(probabilities)
+            predicted_class = CLASS_NAMES[predicted_index]
+            confidence = probabilities[predicted_index]
 
-            # 프레임 표시
-            cv2.imshow('Real-time Object Classification', frame)
+            # 4. 시각화 (스트리밍 창)
             
+            # 예측 결과 텍스트 표시
+            text_result = f"Prediction: {predicted_class} ({confidence:.2f})"
+            color = (0, 255, 0) # 초록색
+            
+            # 결과 텍스트와 신뢰도 표시
+            cv2.putText(frame, text_result, (10, 30), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+            # 모든 클래스의 확률을 막대 그래프 형태로 표시 (선택 사항)
+            y_offset = 60
+            for i, (name, prob) in enumerate(zip(CLASS_NAMES, probabilities)):
+                prob_text = f"{name}: {prob:.2f}"
+                cv2.putText(frame, prob_text, (10, y_offset + i * 25), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+            
+            # FPS 계산 및 표시
+            end_time = time.time()
+            fps = 1 / (end_time - start_time)
+            cv2.putText(frame, f"FPS: {fps:.2f}", (10, frame.shape[0] - 10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+            # "스트리밍 창" 표시
+            cv2.imshow("Real-Time Object Classification Test", frame)
+
             # 'q' 또는 ESC 키를 누르면 종료
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            if cv2.waitKey(1) & 0xFF in [ord('q'), 27]:
                 break
 
-    # 캡처 및 창 해제
+    # 자원 해제
     cap.release()
     cv2.destroyAllWindows()
+    print("실시간 객체 분류 테스트 종료.")
 
-# --- 4. 메인 실행 ---
-if __name__ == "__main__":
-    # ⚠️ 테스트할 모델 파일 경로를 여기에 정확히 지정해야 합니다!
-    # 예시: 학습 중 저장된 'best' 모델 파일
-    MODEL_WEIGHTS_PATH = "checkpoint_mobilenetv3_classifier_e5_acc1.0000.pth"
-    # MODEL_WEIGHTS_PATH = "checkpoint_mobilenetv3_classifier_e10_acc0.9935.pth"
-    # MODEL_WEIGHTS_PATH = "checkpoint_mobilenetv3_classifier_e15_acc1.0000.pth"
-    # MODEL_WEIGHTS_PATH = "checkpoint_mobilenetv3_classifier_e20_acc1.0000.pth"
-
-    
-    # ⚠️ 학습 코드에서 최고 정확도로 저장된 실제 파일 이름으로 변경해주세요.
-    # 예: "best_mobilenetv3_classifier_e18_acc0.9870.pth"
-    
-    try:
-        # 모델 로드
-        loaded_model = load_model(MODEL_WEIGHTS_PATH, NUM_CLASSES)
-        
-        # 스트리밍 시작
-        inference_stream(loaded_model, transform)
-        
-    except FileNotFoundError:
-        print(f"\n❌ 오류: 모델 가중치 파일({MODEL_WEIGHTS_PATH})을 찾을 수 없습니다.")
-        print("   -> 파일 경로와 이름을 확인하고, 학습이 완료되었는지 확인하세요.")
-    except Exception as e:
-        print(f"\n❌ 예기치 않은 오류 발생: {e}")
+if __name__ == '__main__':
+    main()
