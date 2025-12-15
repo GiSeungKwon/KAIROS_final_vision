@@ -8,14 +8,14 @@ DATA_DIR = os.path.join(BASE_DIR, 'data')
 
 # 입력 및 출력 폴더 설정
 INPUT_FOLDERS = {
-    # 'ESP32': 'Anomaly_ESP32',
-    # 'MB102': 'Anomaly_MB102',
+    'ESP32': 'Anomaly_ESP32',
+    'MB102': 'Anomaly_MB102',
     'L298N': 'Anomaly_L298N'
 }
 
 OUTPUT_FOLDERS = {
-    # 'ESP32': 'aug_Anomaly_ESP32',
-    # 'MB102': 'aug_Anomaly_MB102',
+    'ESP32': 'aug_Anomaly_ESP32',
+    'MB102': 'aug_Anomaly_MB102',
     'L298N': 'aug_Anomaly_L298N'
 }
 
