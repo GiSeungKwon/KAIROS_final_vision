@@ -12,8 +12,9 @@ import timm
 
 # --- 설정 (Hyperparameters and Paths) ---
 # 정상 이미지 경로 (사용자 지정 경로)
-NORMAL_IMAGE_DIR = r"C:\Dev\KAIROS_Project\data\aug\aug_Anomaly_ESP32"
-
+MODULE = "ESP32"
+NORMAL_IMAGE_DIR = r"C:\Dev\KAIROS_Project\data\aug\aug_Anomaly_" + MODULE
+MEMORY_BANK_NAME = MODULE + "_patchcore_memory_bank.npy"
 # 모델 설정
 BACKBONE_MODEL = "resnet18" # 특징 추출기 모델 (예: WideResNet, ResNet18 등)
 FEATURE_LAYER_NAMES = ["layer2", "layer3"] # PatchCore에서 사용할 특징 맵 레이어
@@ -198,6 +199,6 @@ coreset_memory_bank = get_coreset_subsampling(memory_bank, M)
 print(f"최종 코어셋 메모리 뱅크 크기: {coreset_memory_bank.shape}")
 
 # 학습된 메모리 뱅크 저장
-memory_bank_path = os.path.join(OUTPUT_DIR, "patchcore_memory_bank.npy")
+memory_bank_path = os.path.join(OUTPUT_DIR, MEMORY_BANK_NAME)
 np.save(memory_bank_path, coreset_memory_bank)
 print(f"\n--- 학습 완료: 메모리 뱅크가 다음 경로에 저장되었습니다: {memory_bank_path} ---")
