@@ -25,6 +25,8 @@ PATCH_SIZE = 3 # 패치 크기 (일반적으로 3)
 NEIGHBOR_COUNT = 9 # 이상 스코어 계산 시 사용할 최근접 이웃 개수
 SUBSAMPLING_RATIO = 0.1 # 메모리 뱅크 구축 시 코어셋 서브샘플링 비율 (0.01~0.2)
 
+PATCH_STRIDE = 8
+
 # 출력 경로
 OUTPUT_DIR = "patchcore_results"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -129,7 +131,7 @@ def extract_patches(features, patch_size):
     all_patches = []
     for feat in aligned_features:
         B, C, H, W = feat.shape
-        patches = feat.unfold(2, patch_size, 1).unfold(3, patch_size, 1)
+        patches = feat.unfold(2, patch_size, PATCH_STRIDE).unfold(3, patch_size, PATCH_STRIDE)
         patches = patches.permute(0, 2, 3, 1, 4, 5)
         patches = patches.contiguous().view(
             B, -1, C * patch_size * patch_size
@@ -158,60 +160,47 @@ with torch.no_grad(): # 특징 추출은 학습이 아님 (기울기 계산 불�
         batch_patches = extract_patches(features, PATCH_SIZE)
         
         # CPU로 옮기고 NumPy 배열로 변환 후 메모리 뱅크에 추가
-        memory_bank.append(batch_patches.cpu().numpy())
+        # memory_bank.append(batch_patches.cpu().numpy())
+        memory_bank.append(batch_patches.detach())
 
 # 전체 메모리 뱅크 결합
-memory_bank = np.concatenate(memory_bank, axis=0)
+# memory_bank = np.concatenate(memory_bank, axis=0)
+memory_bank = torch.cat(memory_bank, dim=0)
 print(f"초기 메모리 뱅크 크기: {memory_bank.shape}") # (총 패치 개수, 특징 차원)
 
 
 # --- 4. 코어셋 서브샘플링 (Core-Set Subsampling) ---
 # 대규모 메모리 뱅크를 효율적으로 줄여 추론 속도와 메모리 사용량을 최적화
 
-def get_coreset_subsampling(features, M):
-    """
-    Greedy k-center 알고리즘을 사용하여 코어셋을 선택하는 함수 (근사치)
-    M: 서브샘플링 후 남길 패치 개수
-    """
-    from sklearn.metrics import pairwise_distances
-    
-    # 특징을 NumPy 배열로 변환
+def get_coreset_subsampling_gpu(features, M, device):
     N, D = features.shape
-    
-    # 남길 개수 계산
     if M >= N:
-        return features # 줄일 필요 없음
+        return features
 
-    # 첫 번째 중심점은 무작위로 선택
-    center_idx = np.random.choice(N, 1)
-    coreset_idx = [center_idx[0]]
-    
-    # 모든 특징과 현재 중심점 사이의 거리 계산
-    min_distances = pairwise_distances(features, features[center_idx]).flatten()
-    
-    for _ in tqdm(range(1, M), desc="코어셋 선택"):
-        # 가장 먼 거리를 가진 특징을 새로운 중심점으로 선택
-        new_center_idx = np.argmax(min_distances)
-        coreset_idx.append(new_center_idx)
-        
-        # 새로운 중심점과 나머지 특징 사이의 거리 계산
-        new_distances = pairwise_distances(features, features[[new_center_idx]]).flatten()
-        
-        # 기존 거리(min_distances)와 새로운 거리 중 더 작은 값으로 업데이트
-        # (각 특징이 가장 가까운 중심점까지의 거리를 유지)
-        min_distances = np.minimum(min_distances, new_distances)
-        
-    return features[coreset_idx]
+    center_idx = torch.randint(0, N, (1,), device=device)
+    centers = features[center_idx]
+    min_distances = torch.cdist(features, centers).squeeze(1)
+    selected_indices = [center_idx.item()]
+
+    for _ in tqdm(range(1, M), desc="GPU 코어셋 선택"):
+        new_center_idx = torch.argmax(min_distances)
+        selected_indices.append(new_center_idx.item())
+        new_center = features[new_center_idx].unsqueeze(0)
+        new_distances = torch.cdist(features, new_center).squeeze(1)
+        min_distances = torch.minimum(min_distances, new_distances)
+
+    return features[selected_indices]
 
 # 코어셋으로 줄일 개수 계산
 M = int(len(memory_bank) * SUBSAMPLING_RATIO)
 print(f"코어셋 서브샘플링 목표 개수: {M}")
 
 # 코어셋 서브샘플링 실행
-coreset_memory_bank = get_coreset_subsampling(memory_bank, M)
+coreset_memory_bank = get_coreset_subsampling_gpu(memory_bank, M, device=device)
 print(f"최종 코어셋 메모리 뱅크 크기: {coreset_memory_bank.shape}")
 
 # 학습된 메모리 뱅크 저장
 memory_bank_path = os.path.join(OUTPUT_DIR, MEMORY_BANK_NAME)
-np.save(memory_bank_path, coreset_memory_bank)
+coreset_memory_bank_np = coreset_memory_bank.cpu().numpy()
+np.save(memory_bank_path, coreset_memory_bank_np)
 print(f"\n--- 학습 완료: 메모리 뱅크가 다음 경로에 저장되었습니다: {memory_bank_path} ---")
