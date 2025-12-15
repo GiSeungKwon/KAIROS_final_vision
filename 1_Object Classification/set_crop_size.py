@@ -5,14 +5,14 @@ import glob
 
 # --- 설정 변수 ---
 # 이미지가 있는 폴더 경로
-# ESP32 -> (260, 0) / (1325, 1080)
-# IMAGE_DIR = r"C:\Dev\KAIROS_Project\Vision\0_data\ObjectClassification\ESP32"
+# ESP32 -> (420, 0) / (1600, 1060)
+# IMAGE_DIR = r"C:\Dev\KAIROS_Project\data\Anomaly_ESP32"
 
-# L298N -> (230, 28) / (1274, 1012)
-# IMAGE_DIR = r"C:\Dev\KAIROS_Project\Vision\0_data\ObjectClassification\L298N"
+# MB102 -> (420, 0) / (1600, 1060)
+IMAGE_DIR = r"C:\Dev\KAIROS_Project\data\Anomaly_MB102"
 
-# MB102 -> (194, 0) / (1240, 1080)
-IMAGE_DIR = r"C:\Dev\KAIROS_Project\Vision\0_data\ObjectClassification\MB102"
+# L298N -> (420, 0) / (1560, 1060)
+# IMAGE_DIR = r"C:\Dev\KAIROS_Project\data\Anomaly_L298N"
 
 # 이미지 파일 확장자 (jpg, png 등)
 IMAGE_EXT = "jpg"
