@@ -1,0 +1,203 @@
+import os
+from glob import glob
+from tqdm import tqdm
+import numpy as np
+from PIL import Image
+
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+import timm
+
+# --- 설정 (Hyperparameters and Paths) ---
+# 정상 이미지 경로 (사용자 지정 경로)
+NORMAL_IMAGE_DIR = r"C:\Dev\KAIROS_Project\data\aug\aug_Anomaly_ESP32"
+
+# 모델 설정
+BACKBONE_MODEL = "resnet18" # 특징 추출기 모델 (예: WideResNet, ResNet18 등)
+FEATURE_LAYER_NAMES = ["layer2", "layer3"] # PatchCore에서 사용할 특징 맵 레이어
+IMAGE_SIZE = 256
+BATCH_SIZE = 32
+PATCH_SIZE = 3 # 패치 크기 (일반적으로 3)
+NEIGHBOR_COUNT = 9 # 이상 스코어 계산 시 사용할 최근접 이웃 개수
+SUBSAMPLING_RATIO = 0.1 # 메모리 뱅크 구축 시 코어셋 서브샘플링 비율 (0.01~0.2)
+
+# 출력 경로
+OUTPUT_DIR = "patchcore_results"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+
+# --- 1. 데이터셋 및 데이터로더 ---
+
+class ESP32Dataset(Dataset):
+    """
+    ESP32 정상 이미지를 로드하는 Dataset 클래스
+    """
+    def __init__(self, image_dir, transform=None):
+        # 지정된 경로에서 모든 이미지 파일 경로를 찾음
+        self.image_paths = sorted(glob(os.path.join(image_dir, '*.*')))
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        # 이미지 로드 및 RGB 변환
+        img_path = self.image_paths[idx]
+        img = Image.open(img_path).convert('RGB')
+        
+        # 변환 적용
+        if self.transform:
+            img = self.transform(img)
+        
+        # 파일 경로도 반환하여 나중에 디버깅에 활용 가능
+        return img, img_path
+
+# 데이터 전처리 파이프라인
+data_transforms = transforms.Compose([
+    transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+    transforms.ToTensor(),
+    # ImageNet 평균/표준편차로 정규화 (사전 학습 모델 사용 시 일반적)
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+# 데이터셋 및 데이터로더 생성
+train_dataset = ESP32Dataset(NORMAL_IMAGE_DIR, transform=data_transforms)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+
+
+# --- 2. 특징 추출기 (Feature Extractor) ---
+
+class FeatureExtractor(nn.Module):
+    """
+    사전 학습된 모델을 사용하여 중간 특징 맵을 추출하는 클래스
+    """
+    def __init__(self, backbone_name, feature_layer_names):
+        super(FeatureExtractor, self).__init__()
+        # timm 라이브러리를 사용하여 사전 학습된 모델 로드 (pre=True)
+        self.model = timm.create_model(
+            backbone_name, 
+            pretrained=True, 
+            features_only=True # 특징 맵만 추출하도록 설정
+        )
+        # 사용할 특징 레이어의 인덱스를 찾음
+        self.feature_layer_indices = [
+            list(self.model.feature_info.module_names).index(name) 
+            for name in feature_layer_names
+        ]
+
+    def forward(self, x):
+        # 특징 맵 추출
+        features = self.model(x)
+        # 지정된 레이어의 특징만 반환
+        return [features[i] for i in self.feature_layer_indices]
+
+# 특징 추출기 초기화
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+extractor = FeatureExtractor(BACKBONE_MODEL, FEATURE_LAYER_NAMES).to(device)
+extractor.eval() # 특징 추출기는 학습 모드가 아닌 평가 모드(가중치 고정)로 사용
+
+
+# --- 3. 특징 패치화 및 메모리 뱅크 구축 (학습) ---
+
+def extract_patches(features, patch_size):
+    """
+    특징 맵을 PatchCore의 '패치' 형태로 변환 (sliding window)
+    """
+    all_patches = []
+    # 각 특징 맵(레이어)에 대해 처리
+    for feat in features: # feat: (B, C, H, W)
+        B, C, H, W = feat.shape
+        # unfold를 사용하여 특징 맵을 패치로 나눔
+        # kernel_size=patch_size, stride=1 (겹치는 패치)
+        patches = feat.unfold(2, patch_size, 1).unfold(3, patch_size, 1) # (B, C, H', W', p, p)
+        patches = patches.permute(0, 2, 3, 1, 4, 5) # (B, H', W', C, p, p)
+        patches = patches.contiguous().view(B, -1, C * patch_size * patch_size) # (B, N_patches, C_patch)
+        all_patches.append(patches)
+    
+    # 모든 레이어의 패치를 채널(마지막 차원) 기준으로 결합
+    # (B, N_patches_total, C_total)
+    combined_patches = torch.cat(all_patches, dim=-1)
+    return combined_patches.view(-1, combined_patches.shape[-1]) # (Total_patches, C_total)
+
+
+print("--- 1. 특징 추출 및 메모리 뱅크 초기 구축 시작 ---")
+memory_bank = []
+
+with torch.no_grad(): # 특징 추출은 학습이 아님 (기울기 계산 불필요)
+    for images, _ in tqdm(train_loader, desc="특징 추출"):
+        images = images.to(device)
+        
+        # 1단계: 특징 추출
+        # (B, C_l2, H_l2, W_l2), (B, C_l3, H_l3, W_l3)
+        features = extractor(images) 
+        
+        # 2단계: 특징 패치화
+        # (Total_patches_in_batch, C_total)
+        batch_patches = extract_patches(features, PATCH_SIZE)
+        
+        # CPU로 옮기고 NumPy 배열로 변환 후 메모리 뱅크에 추가
+        memory_bank.append(batch_patches.cpu().numpy())
+
+# 전체 메모리 뱅크 결합
+memory_bank = np.concatenate(memory_bank, axis=0)
+print(f"초기 메모리 뱅크 크기: {memory_bank.shape}") # (총 패치 개수, 특징 차원)
+
+
+# --- 4. 코어셋 서브샘플링 (Core-Set Subsampling) ---
+# 대규모 메모리 뱅크를 효율적으로 줄여 추론 속도와 메모리 사용량을 최적화
+
+# **12세 아이를 위한 비유:**
+# PatchCore에서 추출한 수많은 정상 패치들(기억들)은 마치 **수천 장의 ESP32 보드 부품 사진**을 찍어둔 것과 같아요. 
+# 이 모든 사진을 컴퓨터가 매번 검사하려면 너무 느리겠죠?
+# **코어셋 서브샘플링**은 이 중에서 **가장 중요한 정보**만 담고 있는 **대표 사진 몇 장**만 똑똑하게 골라내는 과정이에요. 
+# 마치 '백과사전' 전체 대신 '핵심 요약 노트'를 만드는 것과 같아서, 속도는 빠르지만 정상적인 모습을 정확히 기억할 수 있게 됩니다.
+
+def get_coreset_subsampling(features, M):
+    """
+    Greedy k-center 알고리즘을 사용하여 코어셋을 선택하는 함수 (근사치)
+    M: 서브샘플링 후 남길 패치 개수
+    """
+    from sklearn.metrics import pairwise_distances
+    
+    # 특징을 NumPy 배열로 변환
+    N, D = features.shape
+    
+    # 남길 개수 계산
+    if M >= N:
+        return features # 줄일 필요 없음
+
+    # 첫 번째 중심점은 무작위로 선택
+    center_idx = np.random.choice(N, 1)
+    coreset_idx = [center_idx[0]]
+    
+    # 모든 특징과 현재 중심점 사이의 거리 계산
+    min_distances = pairwise_distances(features, features[center_idx]).flatten()
+    
+    for _ in tqdm(range(1, M), desc="코어셋 선택"):
+        # 가장 먼 거리를 가진 특징을 새로운 중심점으로 선택
+        new_center_idx = np.argmax(min_distances)
+        coreset_idx.append(new_center_idx)
+        
+        # 새로운 중심점과 나머지 특징 사이의 거리 계산
+        new_distances = pairwise_distances(features, features[[new_center_idx]]).flatten()
+        
+        # 기존 거리(min_distances)와 새로운 거리 중 더 작은 값으로 업데이트
+        # (각 특징이 가장 가까운 중심점까지의 거리를 유지)
+        min_distances = np.minimum(min_distances, new_distances)
+        
+    return features[coreset_idx]
+
+# 코어셋으로 줄일 개수 계산
+M = int(len(memory_bank) * SUBSAMPLING_RATIO)
+print(f"코어셋 서브샘플링 목표 개수: {M}")
+
+# 코어셋 서브샘플링 실행
+coreset_memory_bank = get_coreset_subsampling(memory_bank, M)
+print(f"최종 코어셋 메모리 뱅크 크기: {coreset_memory_bank.shape}")
+
+# 학습된 메모리 뱅크 저장
+memory_bank_path = os.path.join(OUTPUT_DIR, "patchcore_memory_bank.npy")
+np.save(memory_bank_path, coreset_memory_bank)
+print(f"\n--- 학습 완료: 메모리 뱅크가 다음 경로에 저장되었습니다: {memory_bank_path} ---")
