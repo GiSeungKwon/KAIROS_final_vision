@@ -9,8 +9,8 @@ from pymycobot import MyCobot320
 
 CAMERA_INDEX = 0
 
-MODEL_PATH = r"C:\Dev\KAIROS_Project\Vision\3_Cordinate Detection\models\tmp"
-WEIGHTS_FILE = os.path.join(MODEL_PATH, 'multitask_model_epoch_40.pth')
+MODEL_PATH = "C:/Dev/KAIROS_Project/models/Coordinate_Detection_models"
+WEIGHTS_FILE = os.path.join(MODEL_PATH, 'best_multitask_model.pth')
 
 NUM_CLASSES = 17 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")

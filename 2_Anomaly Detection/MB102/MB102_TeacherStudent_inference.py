@@ -11,7 +11,7 @@ from PIL import Image
 # --------------------------------------------------
 # Config (훈련 코드와 동일)
 # --------------------------------------------------
-CONFIG_YAML_PATH = "ESP32_config.yaml"
+CONFIG_YAML_PATH = "MB102_config.yaml"
 # 학습된 모델의 경로 (최고 성능 모델을 사용한다고 가정)
 STUDENT_MODEL_PATH = "output/student_kd_best.pth" 
 
