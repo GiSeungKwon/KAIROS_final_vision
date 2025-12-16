@@ -11,8 +11,6 @@ CAMERA_INDEX = 0
 
 MODEL_PATH = "C:/Dev/KAIROS_Project/models/Coordinate_Detection_models"
 WEIGHTS_FILE = os.path.join(MODEL_PATH, 'multitask_model_epoch_60.pth')
-# multitask_model_epoch_10
-# best_multitask_model - 비스듬하면 못잡음
 
 NUM_CLASSES = 17 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -44,9 +42,7 @@ TEST_PICK_POSE = [-229.30, 20, 183.6, -174.98, 0, 0]
 # --- 2. 클래스 중심값 (Center Rz) 정의 ---
 RZ_CENTERS = np.arange(-90 + 5, 70 + 5 + 1e-6, 10, dtype=np.float32)
 
-
 # --- 3. 모델 정의 (학습 시 사용한 것과 동일해야 함) ---
-
 class ResNetMultiTask(nn.Module):
     def __init__(self, num_classes):
         super(ResNetMultiTask, self).__init__()
@@ -81,7 +77,6 @@ class ResNetMultiTask(nn.Module):
 
 
 # --- 4. 이미지 전처리 정의 (Validation/Test와 동일) ---
-
 test_transform = transforms.Compose([
     transforms.ToPILImage(),
     transforms.Resize(256),
@@ -91,7 +86,6 @@ test_transform = transforms.Compose([
 
 
 # --- 5. Rz 각도 추론 함수 (AI) ---
-
 def predict_rz_angle(model, img, device):
     """
     이미지를 모델에 입력하여 Rz 각도를 추론합니다.
@@ -123,27 +117,20 @@ def predict_rz_angle(model, img, device):
 
 
 # --- 6. MyCobot 제어 함수 ---
-
 def move_robot_to_rz(mc, rz_angle):
     """
     MyCobot의 현재 좌표를 가져와 Rz 값만 업데이트하여 로봇을 이동시킵니다.
     """
     try:
-        # PICK_COORDS의 원본 값을 보존하기 위해 '깊은 복사' 사용
-        # (1) tmp_pick_coords: Z=300의 중간 지점 좌표
         tmp_pick_coords = list(PICK_COORDS) # 💡 PICK_COORDS를 복사본으로 만듦
         tmp_pick_coords[2] = 300 
         
-        # (2) target_coords: 최종 목표 좌표 (Z는 원래 PICK_COORDS의 Z)
         rz_float = float(rz_angle + 5)
-        # 💡 PICK_COORDS의 원본 값을 사용해야 함
         target_coords = PICK_COORDS[:5] + [round(rz_float, 2)]
         
-        # 1. Z=300 (중간 지점)으로 이동
         mc.send_coords(tmp_pick_coords, speed=50)
         time.sleep(5) 
         
-        # 2. 최종 목표 지점으로 이동
         mc.send_coords(target_coords, speed=50)
         time.sleep(5) 
 
@@ -155,7 +142,6 @@ def move_robot_to_rz(mc, rz_angle):
 
 
 # --- 5-1. HSV 기반 Vision Rz 추론 함수 (ROI 적용) ---
-
 def get_vision_rz(img):
     """
     HSV 마스킹 및 minAreaRect를 사용하여 물체의 중심(Cx, Cy)과 Rz 각도를 추론합니다.
