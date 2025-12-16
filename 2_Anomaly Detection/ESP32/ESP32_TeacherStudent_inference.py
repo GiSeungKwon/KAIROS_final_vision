@@ -165,7 +165,7 @@ def run_anomaly_detection_stream():
                 anomaly_score = kd_loss.item() * config.get("kd_loss_weight", 1.0)
                 
                 # 이상 판단 (yaml 파일에 threshold가 설정되어 있어야 합니다)
-                threshold = config.get("anomaly_threshold", 0.08) # 기본값 0.08 사용
+                threshold = config.get("anomaly_threshold", 0.015) # 기본값 0.015 사용
                 is_anomaly = anomaly_score > threshold
                 
                 # 6. 결과 시각화
@@ -185,7 +185,7 @@ def run_anomaly_detection_stream():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2, cv2.LINE_AA) # Yellow
                 
                 # 결과 창에 표시
-                cv2.imshow("Real-time Anomaly Detection (KD)", frame)
+                cv2.imshow("Real-time Anomaly Detection (KD) ESP32", frame)
 
             # 'q' 키를 누르면 종료
             if cv2.waitKey(1) & 0xFF == ord('q'):

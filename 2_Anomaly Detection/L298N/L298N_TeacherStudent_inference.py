@@ -185,7 +185,7 @@ def run_anomaly_detection_stream():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2, cv2.LINE_AA) # Yellow
                 
                 # 결과 창에 표시
-                cv2.imshow("Real-time Anomaly Detection (KD)", frame)
+                cv2.imshow("Real-time Anomaly Detection (KD) L298N", frame)
 
             # 'q' 키를 누르면 종료
             if cv2.waitKey(1) & 0xFF == ord('q'):
