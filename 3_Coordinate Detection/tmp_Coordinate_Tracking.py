@@ -9,7 +9,7 @@ from pymycobot import MyCobot320
 
 CAMERA_INDEX = 0
 
-MODEL_PATH = r"C:\Dev\KAIROS_Project\Vision\3_Cordinate Detection\models\tmp"
+MODEL_PATH = "C:/Dev/KAIROS_Project/models/tmp/Coordinate_Detection_models"
 WEIGHTS_FILE = os.path.join(MODEL_PATH, 'multitask_model_epoch_40.pth')
 
 NUM_CLASSES = 17 
