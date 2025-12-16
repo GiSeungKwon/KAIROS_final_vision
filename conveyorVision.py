@@ -20,7 +20,7 @@ CAMERA_INDEX = 1 # 웹캠 인덱스 (필요에 따라 0으로 변경)
 CLASS_NAMES = ["ESP32", "L298N", "MB102"] # L298N(Motor), MB102(Power)에서 이름 단순화
 NUM_CLASSES = len(CLASS_NAMES)
 # ⚠️ Classification 모델 경로 설정 (사용자 파일 경로에 맞게 변경)
-CLASSIFIER_WEIGHTS_PATH = "../models/ano_ObjectClassification_models/best_model.pth"
+CLASSIFIER_WEIGHTS_PATH = "../models/ano_ObjectClassification_models/best_model.pthg"
 CLASSIFIER_IMAGE_SIZE = 224
 
 # Anomaly Detection 설정
