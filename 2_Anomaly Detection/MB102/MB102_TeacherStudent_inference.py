@@ -118,6 +118,11 @@ def run_anomaly_detection_stream():
     
     # 4. 웹캠 설정
     cap = cv2.VideoCapture(1) # 0은 보통 기본 웹캠을 의미합니다.
+    cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+
+    initial_focus = 55
+    cap.set(cv2.CAP_PROP_FOCUS, initial_focus)
+
     if not cap.isOpened():
         print("ERROR: 웹캠을 열 수 없습니다.")
         return

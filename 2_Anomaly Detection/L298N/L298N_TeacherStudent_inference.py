@@ -118,6 +118,11 @@ def run_anomaly_detection_stream():
     
     # 4. 웹캠 설정
     cap = cv2.VideoCapture(1) # 0은 보통 기본 웹캠을 의미합니다.
+    cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+
+    initial_focus = 64
+    cap.set(cv2.CAP_PROP_FOCUS, initial_focus)
+
     if not cap.isOpened():
         print("ERROR: 웹캠을 열 수 없습니다.")
         return
@@ -165,7 +170,7 @@ def run_anomaly_detection_stream():
                 anomaly_score = kd_loss.item() * config.get("kd_loss_weight", 1.0)
                 
                 # 이상 판단 (yaml 파일에 threshold가 설정되어 있어야 합니다)
-                threshold = config.get("anomaly_threshold", 0.08) # 기본값 0.08 사용
+                threshold = config.get("anomaly_threshold", 0.015) # 기본값 0.015 사용
                 is_anomaly = anomaly_score > threshold
                 
                 # 6. 결과 시각화
