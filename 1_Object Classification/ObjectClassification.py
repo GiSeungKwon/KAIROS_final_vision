@@ -13,6 +13,7 @@ from torchvision import models, transforms
 # --- 1. 설정 (학습 코드와 동일하게 유지) ---
 NUM_CLASSES = 3  # ESP32, L298N, MB102
 INPUT_SIZE = 224
+<<<<<<< HEAD
 
 # anomaly sensor에서 object classification
 # MODEL_SAVE_PATH = 'C:/Dev/KAIROS_Project/models/ano_ObjectClassification_models'
@@ -21,6 +22,10 @@ INPUT_SIZE = 224
 MODEL_SAVE_PATH = 'C:/Dev/KAIROS_Project/models/trck_ObjectClassification_models'
 
 MODEL_FILE_NAME = 'best_model.pth'
+=======
+MODEL_SAVE_PATH = 'C:/Dev/KAIROS_Project/models'
+MODEL_FILE_NAME = 'model_epoch_10.pth'
+>>>>>>> 3a42c12ca734b2603a24907d2402bf37765c68e7
 MODEL_PATH = os.path.join(MODEL_SAVE_PATH, MODEL_FILE_NAME)
 
 # 클래스 인덱스와 이름 매핑 (학습 시의 순서를 따름)
@@ -81,7 +86,11 @@ def main():
     model = load_classification_model(MODEL_PATH, NUM_CLASSES, device)
 
     # 카메라 초기화 (0은 일반적으로 기본 웹캠)
+<<<<<<< HEAD
     cap = cv2.VideoCapture(0)
+=======
+    cap = cv2.VideoCapture(1)
+>>>>>>> 3a42c12ca734b2603a24907d2402bf37765c68e7
     if not cap.isOpened():
         print("오류: 카메라를 열 수 없습니다. 카메라 연결 상태를 확인하세요.")
         return
