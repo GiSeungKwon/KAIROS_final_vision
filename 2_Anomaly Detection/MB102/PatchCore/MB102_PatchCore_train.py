@@ -108,4 +108,4 @@ if __name__ == "__main__":
 
     # 저장
     torch.save(detector.memory_bank, SAVE_DIR / f"{MODULE}_memory_bank.pt")
-    print(f"K-Means 기반 {MODULE} 모델 저장 완료!")
+    print(f"K-Means 기반 {MODULE} 모델 저장 완료!!")
