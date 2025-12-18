@@ -117,11 +117,7 @@ def run_anomaly_detection_stream():
     print(f"이상 탐지 임계값 (예상): {config.get('anomaly_threshold', '설정되지 않음')} (yaml 파일에서 확인)")
     
     # 4. 웹캠 설정
-    cap = cv2.VideoCapture(1) # 0은 보통 기본 웹캠을 의미합니다.
-    cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-
-    initial_focus = 62
-    cap.set(cv2.CAP_PROP_FOCUS, initial_focus)
+    cap = cv2.VideoCapture(3) # 0은 보통 기본 웹캠을 의미합니다.
     
     if not cap.isOpened():
         print("ERROR: 웹캠을 열 수 없습니다.")
@@ -169,12 +165,17 @@ def run_anomaly_detection_stream():
                 # 훈련 시 적용된 kd_loss_weight를 곱하여 최종 점수로 사용
                 anomaly_score = kd_loss.item() * config.get("kd_loss_weight", 1.0)
                 
+                # is_anomaly = anomaly_score > threshold
+
                 # 이상 판단 (yaml 파일에 threshold가 설정되어 있어야 합니다)
                 threshold = config.get("anomaly_threshold", 0.015) # 기본값 0.015 사용
-                is_anomaly = anomaly_score > threshold
+                k = 500
+
+                refined_score = 1 / (1 + np.exp(-k * (anomaly_score - threshold)))
+                is_anomaly = refined_score > 0.5
                 
                 # 6. 결과 시각화
-                display_text = f"Anomaly Score: {anomaly_score:.6f}"
+                display_text = f"Anomaly Score: {anomaly_score:.6f} refined_score: {refined_score:.6f}"
                 color = (0, 255, 0) # Green (정상)
                 
                 if is_anomaly:
