@@ -9,7 +9,7 @@ from tqdm import tqdm
 import numpy as np
 from sklearn.cluster import MiniBatchKMeans
 
-MODULE = "ESP32"
+MODULE = "L298N"
 
 class ModuleDataset(Dataset):
     def __init__(self, root_dir, transform=None):
