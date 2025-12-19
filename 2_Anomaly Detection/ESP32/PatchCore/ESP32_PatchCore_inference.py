@@ -88,7 +88,7 @@ def main():
     detector = RealTimePatchCore(MODEL_PATH)
 
     # 카메라 스트리밍 시작
-    cap = cv2.VideoCapture(0) # 0번 카메라 (웹캠)
+    cap = cv2.VideoCapture(3) # 3번 카메라 (웹캠)
 
     print("--- 실시간 탐지 시작 (종료하려면 'q'를 누르세요) ---")
     
