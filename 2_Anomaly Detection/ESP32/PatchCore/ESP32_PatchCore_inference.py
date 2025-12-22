@@ -7,6 +7,7 @@ import numpy as np
 from pathlib import Path
 
 MODULE = "ESP32"
+DAY = "12191055"
 
 class RealTimePatchCore:
     def __init__(self, memory_bank_path, device="cuda"):
@@ -84,7 +85,7 @@ class RealTimePatchCore:
 
 def main():
     # 경로 설정
-    MODEL_PATH = f"../../../../models/memoryBank_{MODULE}/{MODULE}_memory_bank.pt"
+    MODEL_PATH = f"../../../../models/memoryBank_{MODULE}/{MODULE}_memory_bank_{DAY}.pt"
     detector = RealTimePatchCore(MODEL_PATH)
 
     # 카메라 스트리밍 시작
@@ -109,7 +110,7 @@ def main():
         overlay = cv2.addWeighted(frame, 0.6, heatmap, 0.4, 0)
 
         # 텍스트 정보 표시
-        status = "ANOMALY" if score > 5.0 else "NORMAL" # Threshold 5.0은 예시입니다.
+        status = "ANOMALY" if score > 4.2 else "NORMAL" # Threshold 5.0은 예시입니다.
         color = (0, 0, 255) if status == "ANOMALY" else (0, 255, 0)
         cv2.putText(overlay, f"Score: {score:.2f} ({status})", (10, 30), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
