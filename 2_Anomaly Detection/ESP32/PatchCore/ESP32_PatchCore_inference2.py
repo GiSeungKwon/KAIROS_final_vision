@@ -34,7 +34,7 @@ class RealTimePatchCore:
 
         # [변경] 카메라 전체 화면에서의 ROI (x, y, w, h)
         # 3번 카메라의 원본 해상도에 맞춰 이 좌표를 수정하세요.
-        self.roi = (100, 50, 450, 400) 
+        self.roi = (0, 0, 640, 480) 
 
     def embed(self, x):
         self.features = []
@@ -107,6 +107,14 @@ def main():
     # 카메라 해상도 설정 (필요시)
     # cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
     # cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+    width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    print(f"--- Camera Info ---")
+    print(f"Resolution: {int(width)} x {int(height)}")
+    print(f"FPS: {fps}")
+    print(f"ROI Setting: {detector.roi}")
+    print(f"-------------------")
 
     while cap.isOpened():
         ret, frame = cap.read()

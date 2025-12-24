@@ -1,301 +1,181 @@
+import os
+import sys
+import numpy as np
+import cv2
+from PIL import Image
+import time
+
 import torch
 import torch.nn as nn
-from torchvision import transforms
-from PIL import Image
-import cv2
-import numpy as np
-import os
+import torch.nn.functional as F
+from torchvision import models, transforms
 
 # =================================================================
-# 1. 시스템 설정 및 하이퍼파라미터
+# 1. 설정 및 경로 정의
 # =================================================================
-
-# 공통 설정
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MOBILENET_MEAN = [0.485, 0.456, 0.406]
-MOBILENET_STD = [0.229, 0.224, 0.225]
-CAMERA_INDEX = 1 # 웹캠 인덱스 (필요에 따라 0으로 변경)
-
-# Object Classification 설정
-CLASS_NAMES = ["ESP32", "L298N", "MB102"] # L298N(Motor), MB102(Power)에서 이름 단순화
+DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+ROI = (200, 50, 550, 400) 
+CLASS_NAMES = ['ESP32', 'L298N', 'MB102']
 NUM_CLASSES = len(CLASS_NAMES)
-# ⚠️ Classification 모델 경로 설정 (사용자 파일 경로에 맞게 변경)
-<<<<<<< HEAD
-CLASSIFIER_WEIGHTS_PATH = "../models/ano_ObjectClassification_models/best_model.pthg"
-=======
-CLASSIFIER_WEIGHTS_PATH = "1_Object Classification/checkpoint_mobilenetv3_classifier_e5_acc1.0000.pth"
->>>>>>> 3a42c12ca734b2603a24907d2402bf37765c68e7
-CLASSIFIER_IMAGE_SIZE = 224
 
-# Anomaly Detection 설정
-AD_IMAGE_SIZE = 128 # AD 모델 학습 시 사용한 이미지 크기
-# ⚠️ AD 모델 경로 매핑 (보드 이름과 파일 이름 매핑)
-AD_MODEL_PATHS = {
-    "ESP32": "2_Anomaly Detection/ESP32/ESP32_anomaly_detector_best_loss.pth",
-    "L298N": "2_Anomaly Detection/L298N/L298N_anomaly_detector_best_loss.pth",
-    "MB102": "2_Anomaly Detection/MB102/MB102_anomaly_detector_best_loss.pth",
-}
-# ⚠️ 임계값 설정 (각 보드별 통계 분석 후 설정된 값 사용)
-# 임시로 낮은 값을 사용하며, 실제 사용 시에는 통계적으로 재설정해야 합니다.
+# [수정] 클래스별 개별 임계값 설정
+# 실험 결과에 따라 이 수치들을 미세 조정하시면 됩니다.
 AD_THRESHOLDS = {
-    "ESP32": 0.045,
-    "L298N": 0.045,
-    "MB102": 0.060,
+    "ESP32": 4.5,
+    "L298N": 4.5,
+    "MB102": 4.5
 }
 
-# ROI 설정 (Anomaly Detection 시 사용할 관심 영역 - 모든 보드에 공통 적용 가정)
-# 이 값들은 카메라 해상도 및 제품 위치에 맞게 조정해야 합니다.
-ROI_X, ROI_Y = 100, 50 
-ROI_W, ROI_H = 500, 400 
+CLASSIFIER_PATH = r"C:\Dev\KAIROS_Project\Vision\ano_classification.pth"
+AD_MODEL_PATHS = {
+    "ESP32": r"C:\Dev\KAIROS_Project\Vision\ESP32_memory_bank.pt",
+    "L298N": r"C:\Dev\KAIROS_Project\Vision\L298N_memory_bank.pt",
+    "MB102": r"C:\Dev\KAIROS_Project\Vision\MB102_memory_bank.pt"
+}
 
 # =================================================================
-# 2. 모델 아키텍처 정의
+# 2. 통합 검사 클래스
 # =================================================================
-
-# 2.1. Object Classification 모델 아키텍처 (MobileNetV3 Small)
-def create_classifier_model(num_classes):
-    """Classification 모델 아키텍처를 정의합니다."""
-    # 로드 방식은 사용자님의 원본 코드와 동일하게 유지
-    model = torch.hub.load('pytorch/vision:v0.10.0', 'mobilenet_v3_small', weights=None)
-    in_features = model.classifier[-1].in_features
-    model.classifier[-1] = torch.nn.Linear(in_features, num_classes)
-    return model
-
-# 2.2. Anomaly Detection 모델 아키텍처 (Autoencoder)
-class Autoencoder(nn.Module):
+class IntegratedInspector:
     def __init__(self):
-        super(Autoencoder, self).__init__()
-        # 인코더 및 디코더 정의 (학습 코드와 완전히 동일해야 함)
-        self.encoder = nn.Sequential(
-            nn.Conv2d(3, 16, 3, stride=2, padding=1),   nn.ReLU(True),
-            nn.Conv2d(16, 32, 3, stride=2, padding=1),  nn.ReLU(True),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1),  nn.ReLU(True),
-            nn.Conv2d(64, 128, 3, stride=2, padding=1), nn.ReLU(True)
-        )
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(128, 64, 3, stride=2, padding=1, output_padding=1), nn.ReLU(True),
-            nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1), nn.ReLU(True),
-            nn.ConvTranspose2d(32, 16, 3, stride=2, padding=1, output_padding=1), nn.ReLU(True),
-            nn.ConvTranspose2d(16, 3, 3, stride=2, padding=1, output_padding=1), 
-        )
+        # --- 2.1 Classification 모델 로드 ---
+        print(f"Loading Classification Model: {CLASSIFIER_PATH}")
+        self.classifier = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+        num_ftrs = self.classifier.fc.in_features
+        self.classifier.fc = nn.Linear(num_ftrs, NUM_CLASSES)
+        self.classifier.load_state_dict(torch.load(CLASSIFIER_PATH, map_location=DEVICE))
+        self.classifier.to(DEVICE).eval()
 
-    def forward(self, x):
-        return self.decoder(self.encoder(x))
+        # --- 2.2 PatchCore 백본 및 Hook 설정 ---
+        self.ad_backbone = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1).to(DEVICE)
+        self.ad_backbone.eval()
+        self.features = []
+
+        def hook(module, input, output):
+            self.features.append(output)
+
+        # 1792차원 유지를 위한 Layer 1, 2, 3 Hook
+        self.ad_backbone.layer1[-1].register_forward_hook(hook)
+        self.ad_backbone.layer2[-1].register_forward_hook(hook)
+        self.ad_backbone.layer3[-1].register_forward_hook(hook)
+
+        # --- 2.3 Memory Banks 로드 ---
+        self.memory_banks = {}
+        for name, path in AD_MODEL_PATHS.items():
+            if os.path.exists(path):
+                print(f"Loading {name} Memory Bank...")
+                self.memory_banks[name] = torch.load(path, map_location=DEVICE)
+        
+        # --- 2.4 전처리 설정 ---
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+
+    def embed(self, x):
+        self.features = []
+        with torch.no_grad():
+            _ = self.ad_backbone(x)
+        
+        f1, f2, f3 = self.features
+        target_size = (f1.shape[2], f1.shape[3]) 
+        
+        f1 = F.avg_pool2d(f1, 3, 1, 1)
+        f2 = F.interpolate(f2, size=target_size, mode="bilinear", align_corners=False)
+        f2 = F.avg_pool2d(f2, 3, 1, 1)
+        f3 = F.interpolate(f3, size=target_size, mode="bilinear", align_corners=False)
+        f3 = F.avg_pool2d(f3, 3, 1, 1)
+        
+        combined = torch.cat([f1, f2, f3], dim=1)
+        return combined.permute(0, 2, 3, 1).reshape(-1, combined.shape[1])
+
+    def inspect(self, frame):
+        overlay = frame.copy()
+        h_orig, w_orig = frame.shape[:2]
+
+        rx, ry, rw, rh = ROI
+        rx, ry = max(0, rx), max(0, ry)
+        rw, rh = min(rw, w_orig - rx), min(rh, h_orig - ry)
+        roi_bgr = frame[ry:ry+rh, rx:rx+rw]
+
+        if roi_bgr.size == 0:
+            return frame, "None", 0.0, 0.0
+
+        roi_input = cv2.resize(roi_bgr, (224, 224))
+        roi_rgb = cv2.cvtColor(roi_input, cv2.COLOR_BGR2RGB)
+        input_tensor = self.transform(Image.fromarray(roi_rgb)).unsqueeze(0).to(DEVICE)
+
+        with torch.no_grad():
+            # 1. Classification
+            cls_out = self.classifier(input_tensor)
+            probs = F.softmax(cls_out, dim=1).squeeze()
+            pred_idx = torch.argmax(probs).item()
+            pred_class = CLASS_NAMES[pred_idx]
+            confidence = probs[pred_idx].item()
+
+            # 2. Anomaly Detection
+            anomaly_score = 0.0
+            if pred_class in self.memory_banks:
+                embedding = self.embed(input_tensor)
+                distances = torch.cdist(embedding, self.memory_banks[pred_class], p=2)
+                min_distances, _ = torch.min(distances, dim=1)
+                
+                side_len = 56 
+                anomaly_map = min_distances.reshape(side_len, side_len).cpu().numpy()
+                anomaly_map_resized = cv2.resize(anomaly_map, (rw, rh))
+                anomaly_score = anomaly_map_resized.max()
+                
+                norm_map = cv2.normalize(anomaly_map_resized, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+                heatmap = cv2.applyColorMap(norm_map, cv2.COLORMAP_JET)
+                roi_overlay = cv2.addWeighted(roi_bgr, 0.5, heatmap, 0.5, 0)
+                overlay[ry:ry+rh, rx:rx+rw] = roi_overlay
+
+        cv2.rectangle(overlay, (rx, ry), (rx+rw, ry+rh), (0, 255, 255), 2)
+        return overlay, pred_class, confidence, anomaly_score
 
 # =================================================================
-# 3. 모델 로드 및 전처리 정의
+# 3. 메인 루프
 # =================================================================
+def main():
+    inspector = IntegratedInspector()
+    cap = cv2.VideoCapture(3) 
 
-# 3.1. Classification 모델 로드
-def load_classifier(model_path, num_classes):
-    model = create_classifier_model(num_classes)
-    if os.path.exists(model_path):
-        model.load_state_dict(torch.load(model_path, map_location=DEVICE))
-        model.to(DEVICE)
-        model.eval()
-        print(f"✅ Classifier 로드 완료: {model_path}")
-        return model
-    else:
-        print(f"❌ 오류: Classification 모델({model_path})을 찾을 수 없습니다.")
-        return None
-
-# 3.2. AD 모델 로드 (Anomaly Detection 모델은 필요할 때 동적으로 로드)
-def load_ad_model(class_name):
-    model_path = AD_MODEL_PATHS.get(class_name)
-    if not model_path:
-        print(f"⚠️ {class_name}에 대한 Anomaly Detection 모델 경로가 정의되지 않았습니다.")
-        return None
-    
-    model = Autoencoder().to(DEVICE)
-    if os.path.exists(model_path):
-        model.load_state_dict(torch.load(model_path, map_location=DEVICE))
-        model.to(DEVICE)
-        model.eval()
-        return model
-    else:
-        print(f"❌ 오류: AD 모델({model_path})을 찾을 수 없습니다.")
-        return None
-
-# 3.3. 전처리 파이프라인
-# Classification 전처리
-classifier_transform = transforms.Compose([
-    transforms.Resize((CLASSIFIER_IMAGE_SIZE, CLASSIFIER_IMAGE_SIZE)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=MOBILENET_MEAN, std=MOBILENET_STD)
-])
-
-# Anomaly Detection 전처리
-ad_preprocess = transforms.Compose([
-    transforms.Resize((AD_IMAGE_SIZE, AD_IMAGE_SIZE)),
-    transforms.ToTensor(), 
-    transforms.Normalize(mean=MOBILENET_MEAN, std=MOBILENET_STD) 
-])
-
-# Anomaly Detection 후처리 (역정규화)
-ad_postprocess = transforms.Compose([
-    transforms.Normalize(mean=[0.0, 0.0, 0.0], std=[1/s for s in MOBILENET_STD]),
-    transforms.Normalize(mean=[-m for m in MOBILENET_MEAN], std=[1.0, 1.0, 1.0]),
-    transforms.ToPILImage() 
-])
-
-# =================================================================
-# 4. 검사 실행 메인 함수
-# =================================================================
-def run_inspection_pipeline(classifier):
-    """통합 검사 파이프라인을 실행합니다."""    
-    cap = cv2.VideoCapture(CAMERA_INDEX)
     if not cap.isOpened():
-        print("🔴 오류: 웹캠을 열 수 없습니다. 카메라 인덱스를 확인하세요.")
+        print("Error: Camera not found.")
         return
 
-    print(f"🟢 통합 시스템 시작. 'c'를 눌러 검사, 'q'를 눌러 종료하세요.")
-    
-    # 이전에 로드된 AD 모델을 저장하여 반복 로딩 방지 (캐싱)
-    ad_model_cache = {}
-	
-    # 디스플레이 크기 설정 (원본 프레임 기준)
-    W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    if W == 0: W, H = 640, 480
-		
-    inspection_result = {"status": "Waiting...", "class": "", "conf": 0.0, "ad_loss": 0.0}
-
-    while True:
+    while cap.isOpened():
         ret, frame = cap.read()
         if not ret: break
-		
-        display_frame = frame.copy()
-		
-		# ROI 좌표 설정 (c 키 입력과 상관없이 사용)
-        x1, y1, x2, y2 = ROI_X, ROI_Y, ROI_X + ROI_W, ROI_Y + ROI_H
-		
-		# -----------------------------------------------------------
-		# 💡 [수정] 검사 전에도 ROI를 항상 표시: 회색/파란색 테두리 사용
-		# -----------------------------------------------------------
-		
-		# 검사 중이 아닐 때 또는 결과 대기 중일 때 표시할 기본 색상 (BGR: 밝은 회색 또는 파란색)
-        default_color = (150, 150, 150) # 회색
-		
-		# ROI 영역을 기본 색상으로 먼저 그립니다.
-        cv2.rectangle(display_frame, (x1, y1), (x2, y2), default_color, 2) # 두께 2
-		
-		# 'c' 키 입력 시 검사 수행
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('c'):
-			
-			# --- 단계 1: Object Classification ---
-			# ... (분류 로직은 동일)
-			
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            pil_image = Image.fromarray(rgb_frame)
-            input_tensor = classifier_transform(pil_image).unsqueeze(0).to(DEVICE)
-			
-            with torch.no_grad():
-                outputs = classifier(input_tensor)
-                probabilities = torch.nn.functional.softmax(outputs, dim=1)
-                conf_score, predicted_idx = torch.max(probabilities, 1)
-				
-                predicted_class = CLASS_NAMES[predicted_idx.item()]
-                confidence = conf_score.item()
-				
-                print(f"\n[Classification] Class: {predicted_class}, Confidence: {confidence*100:.2f}%")
-				
-				# 결과 업데이트
-                inspection_result["class"] = predicted_class
-                inspection_result["conf"] = confidence
+        cv2.imshow("Original Image", frame)
 
-				# --- 단계 2: Anomaly Detection ---
-				
-				# 해당 클래스의 AD 모델 로드 (캐시 사용)
-                if predicted_class not in ad_model_cache:
-                    ad_model_cache[predicted_class] = load_ad_model(predicted_class)
-				
-                ad_detector = ad_model_cache.get(predicted_class)
-				
-                if ad_detector:
-					# ROI 추출
-					# x1, y1, x2, y2 = ROI_X, ROI_Y, ROI_X + ROI_W, ROI_Y + ROI_H # 👆 이미 루프 시작에서 정의됨
-                    roi = frame[y1:y2, x1:x2]
-					
-                    if roi.size > 0:
-						# AD 전처리
-                        roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-						# PIL 변환 추가 (이전 오류 해결에 따라)
-                        ad_pil_image = Image.fromarray(roi_rgb) 
-                        ad_input_tensor = ad_preprocess(ad_pil_image).unsqueeze(0).to(DEVICE)
-						
-						# AD 추론
-                        ad_output_tensor = ad_detector(ad_input_tensor)
-                        ad_loss = torch.mean((ad_input_tensor - ad_output_tensor) ** 2).item()
-						
-                        threshold = AD_THRESHOLDS[predicted_class]
-						
-						# 결과 판별
-                        if ad_loss > threshold:
-                            ad_status = "ANOMALY"
-                            result_color = (0, 0, 255) # 빨강
-                        else:
-                            ad_status = "NORMAL"
-                            result_color = (0, 255, 0) # 초록
-							
-						# 복원 이미지 시각화 (선택적)
-                        reconstructed_pil = ad_postprocess(ad_output_tensor.squeeze(0).cpu())
-                        reconstructed_roi = np.array(reconstructed_pil) * 255
-                        reconstructed_roi = reconstructed_roi.astype(np.uint8)
-                        reconstructed_roi = cv2.cvtColor(reconstructed_roi, cv2.COLOR_RGB2BGR)
-                        reconstructed_roi_resized = cv2.resize(reconstructed_roi, (ROI_W, ROI_H))
-						
-						# 원본 프레임에 복원된 ROI 삽입
-                        display_frame[y1:y2, x1:x2] = reconstructed_roi_resized
-						
-						# -----------------------------------------------------------
-						# 💡 [수정] 검사 결과에 따른 색상으로 ROI를 덮어씁니다.
-						# -----------------------------------------------------------
-                        cv2.rectangle(display_frame, (x1, y1), (x2, y2), result_color, 4) # 두께 4
+        start_time = time.time()
+        display_img, cls_name, conf, ad_score = inspector.inspect(frame)
+        fps = 1 / (time.time() - start_time)
 
-						# 결과 업데이트
-                        inspection_result["status"] = ad_status
-                        inspection_result["ad_loss"] = ad_loss
-						
-                    else:
-                        inspection_result["status"] = "ERROR (ROI 추출 실패)"
-                        inspection_result["ad_loss"] = 0.0
-						
-                else:
-                    inspection_result["status"] = "ERROR (AD 모델 로드 실패)"
-                    inspection_result["ad_loss"] = 0.0
+        # [수정] 클래스별 개별 임계값을 가져와서 판정 (기본값 5.0)
+        current_threshold = AD_THRESHOLDS.get(cls_name, 5.0)
+        status = "ANOMALY" if ad_score > current_threshold else "NORMAL"
+        color = (0, 0, 255) if status == "ANOMALY" else (0, 255, 0)
 
-		# --- 단계 3: 최종 결과 시각화 ---
-		# ... (텍스트 오버레이 로직은 동일)
-        cv2.putText(display_frame, f"Class: {inspection_result['class']} ({inspection_result['conf']*100:.1f}%)", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2, cv2.LINE_AA)
-		
-        status_text = f"Status: {inspection_result['status']} (Loss: {inspection_result['ad_loss']:.5f})"
-		
-		# 상태에 따른 색상 설정
-        if "ANOMALY" in inspection_result['status']:
-            status_color = (0, 0, 255) # 빨강
-        elif "NORMAL" in inspection_result['status']:
-            status_color = (0, 255, 0) # 초록
-        else:
-            status_color = (255, 255, 255) # 흰색
-			
-        cv2.putText(display_frame, status_text, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2, cv2.LINE_AA)
-        cv2.putText(display_frame, "Press 'c' to inspect, 'q' to quit", (10, H - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+        # UI 텍스트 출력
+        cv2.putText(display_img, f"Class: {cls_name} ({conf:.2f})", (20, 50), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        # 현재 적용된 임계값(TH)도 같이 표시되도록 추가했습니다.
+        cv2.putText(display_img, f"Score: {ad_score:.2f} (TH: {current_threshold})", (20, 90), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
+        cv2.putText(display_img, f"Status: {status}", (20, 130), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 3)
+        cv2.putText(display_img, f"FPS: {fps:.1f}", (20, frame.shape[0]-20), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
 
-        cv2.imshow("Integrated Inspection System", display_frame)
-
-        if key == ord('q'):
+        cv2.imshow("KAIROS Integrated Inspection", display_img)
+        
+        if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
     cap.release()
     cv2.destroyAllWindows()
 
-# =================================================================
-# 5. 메인 실행 블록
-# =================================================================
 if __name__ == "__main__":
-    classifier = load_classifier(CLASSIFIER_WEIGHTS_PATH, NUM_CLASSES)
-    if classifier:
-        try:
-            run_inspection_pipeline(classifier)
-        except Exception as e:
-            print(f"시스템 실행 중 예기치 않은 오류 발생: {e}")
+    main()
